@@ -1,0 +1,12 @@
+[
+  {
+    "question": "What does CPU stand for?",
+    "answers": ["Central Processing Unit", "Computer Personal Unit", "Central Program Utility"],
+    "correct_answer": "Central Processing Unit"
+  },
+  {
+    "question": "Which language is commonly used for web page behavior?",
+    "answers": ["Python", "JavaScript", "HTML"],
+    "correct_answer": "JavaScript"
+  }
+]
