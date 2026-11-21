@@ -1,0 +1,6 @@
+# Module 3 (vision). Install with: pip install -r requirements-vision.txt
+numpy>=1.24
+opencv-python>=4.8
+ultralytics>=8.3      # YOLO-pose; downloads yolo11n-pose.pt (~6 MB) on first run
+pytest>=8             # vision tests
+# reachy-mini         # uncomment when testing with the robot camera
