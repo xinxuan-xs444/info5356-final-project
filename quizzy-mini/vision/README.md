@@ -38,6 +38,10 @@ Swapping the laptop webcam for the robot camera only means passing a different
 
 ## Contract with Module 1
 
+**With the game logic (`feature/game-logic`):** `VisionService` also has `open_buzz(seats)`,
+`close_buzz()` and `reopen()`, the names `main.create_game(vision=...)` calls. See
+[INTEGRATION.md](INTEGRATION.md) for the ~10 lines of wiring.
+
 ```python
 from vision import VisionService, WebcamSource, YoloPoseEstimator, SeatMap
 
@@ -71,7 +75,7 @@ From the repository root (Python 3.10+):
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements-vision.txt
 cd quizzy-mini
-../.venv/bin/python -m pytest tests/vision_tests -q   # 43 tests, no camera/model needed
+../.venv/bin/python -m pytest tests/vision_tests -q   # 48 tests, no camera/model needed
 ../.venv/bin/python -m vision.demo                    # webcam 0
 ../.venv/bin/python -m vision.demo --source clip.mp4 --loop
 ```

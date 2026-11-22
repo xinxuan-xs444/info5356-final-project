@@ -11,6 +11,15 @@ Module 1 usage (blocking):
     else: result.seat                   # 1..4
 
 or non-blocking: open_buzz_window(..., on_result=callback), then wait_for_buzz().
+
+Game-logic interface (the names main.create_game(vision=...) calls on feature/game-logic):
+
+    buzzes = queue.Queue()
+    vision = VisionService(..., on_buzz=buzzes.put)   # winners arrive as BuzzResult in the queue
+    game = create_game(vision=vision)                 # game calls vision.open_buzz / close_buzz
+    # in the game's main loop:  result = buzzes.get_nowait(); if not game.buzz(result.seat): vision.reopen()
+
+See INTEGRATION.md for the full wiring.
 """
 
 from __future__ import annotations
@@ -56,8 +65,13 @@ class VisionService:
         buzz_config: BuzzConfig | None = None,
         clock: Callable[[], float] = time.monotonic,
         event_log: str | Path | None = None,
+        on_buzz: Callable[[BuzzResult], None] | None = None,
     ):
+        """`on_buzz` receives each winner of a window opened with open_buzz(). It is called
+        from the vision thread, so pass something thread-safe, e.g. `queue.Queue().put`."""
         self.source = source
+        self.on_buzz = on_buzz
+        self._game_seats: tuple[int, ...] | None = None  # seats of the open_buzz() window, for reopen()
         self.estimator = estimator
         self.seat_map = seat_map or SeatMap.uniform()
         self.rule = rule or HandRaiseRule()
@@ -70,6 +84,37 @@ class VisionService:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._event_log = Path(event_log) if event_log else None
+
+    # ------------------------------------------------------------------ game-logic interface
+    # These match what main.create_game(vision=...) calls on feature/game-logic.
+    # The game owns all timers, so these windows have no vision-side timeout.
+    def open_buzz(self, seats: Iterable[int]) -> None:
+        """Game event `buzz_open`: start accepting raises from `seats`. Winners go to `on_buzz`."""
+        with self._lock:
+            self._game_seats = tuple(seats)
+            self.open_buzz_window(self._game_seats, timeout_s=None, on_result=self._deliver)
+
+    def close_buzz(self) -> None:
+        """Game event `state` / `reset`: stop accepting raises."""
+        with self._lock:
+            self._game_seats = None
+            self.close_buzz_window()
+
+    def reopen(self) -> bool:
+        """Reopen the last open_buzz() window after the game rejected a buzz (e.g. while paused).
+
+        The rejected student must lower and raise again (fresh-raise rule).
+        Returns False if the game has closed buzzing since (nothing to reopen).
+        """
+        with self._lock:
+            if self._game_seats is None:
+                return False
+            self.open_buzz(self._game_seats)
+            return True
+
+    def _deliver(self, result: BuzzResult | None) -> None:
+        if result is not None and self.on_buzz is not None:
+            self.on_buzz(result)
 
     # ------------------------------------------------------------------ API for Module 1
     def open_buzz_window(
