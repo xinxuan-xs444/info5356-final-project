@@ -1,6 +1,7 @@
 """Try Module 2 by hand. Run from the quizzy-mini folder.
 
     python -m speech.demo devices              list microphones and speakers
+    python -m speech.demo mic                  record 5 s and play it back (no API needed)
     python -m speech.demo say "Hello, I'm Quizzy!"
     python -m speech.demo listen               say answers; see transcript and parsed number
     python -m speech.demo name                 the introduction flow
@@ -32,7 +33,7 @@ import config
 
 from .answer_parser import format_number, parse_answer
 from .speech import SpeechService, apply_answer, build_speech_service
-from .stt import Heard, list_devices
+from .stt import NUMBER_PROMPT, Heard, list_devices
 from .teaching import TeachingCoach
 
 
@@ -67,6 +68,25 @@ def cmd_devices(args, mini) -> None:
     print("\nmacOS voices: run `say -v '?'`. Set SPEAKER_DEVICE / MIC_DEVICE in config.py to a name substring.")
 
 
+def cmd_mic(args, mini) -> None:
+    """Microphone and speaker check without any API: record one utterance, report it, play it back."""
+    import numpy as np
+
+    from .stt import SoundDeviceRecorder
+    from .tts import SoundDevicePlayer
+
+    recorder = SoundDeviceRecorder(args.mic or config.MIC_DEVICE)
+    print(f"Microphone: {recorder.name}. Say something now (up to 5 s)...", flush=True)
+    clip = recorder.record(5.0)
+    peak = float(np.max(np.abs(clip.samples))) if len(clip.samples) else 0.0
+    print(f"  speech detected: {clip.speech_detected}, length {clip.duration:.1f}s, peak level {peak:.2f}")
+    if not clip.speech_detected:
+        print("  Nothing heard. Check System Settings > Privacy & Security > Microphone for Terminal.")
+        return
+    print("  Playing it back...", flush=True)
+    SoundDevicePlayer(config.SPEAKER_DEVICE).play(clip.samples, 16000)
+
+
 def cmd_say(args, mini) -> None:
     with build(args, mini, listen=False) as speech:
         speech.say(" ".join(args.text) or "Hi! I'm Quizzy, your math game host. 4 × 3 = 12!")
@@ -75,10 +95,14 @@ def cmd_say(args, mini) -> None:
 
 def cmd_listen(args, mini) -> None:
     with build(args, mini) as speech:
+        if speech.listener is None:
+            return
         print("Say an answer (Ctrl+C to stop). Try: 'seventeen and a half', 'repeat please', 'I don't know'.")
-        while True:
+        count = 0
+        while not args.count or count < args.count:
+            count += 1
             start = time.monotonic()
-            heard = speech.listener.listen(8, None)
+            heard = speech.listener.listen(8, NUMBER_PROMPT)
             result = parse_answer(heard.text)
             print(f"  heard {heard.text!r} -> {result.intent.value}, value={result.value}, "
                   f"confidence={result.confidence:.2f} ({result.reason}); {time.monotonic() - start:.1f}s")
@@ -198,12 +222,13 @@ def cmd_game(args, mini) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["devices", "say", "listen", "name", "round", "game"])
+    parser.add_argument("command", choices=["devices", "mic", "say", "listen", "name", "round", "game"])
     parser.add_argument("text", nargs="*")
     parser.add_argument("--robot", action="store_true")
     parser.add_argument("--type", action="store_true")
     parser.add_argument("--mic")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--count", type=int, default=0, help="listen: stop after this many answers")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="[%(asctime)s] %(message)s")
