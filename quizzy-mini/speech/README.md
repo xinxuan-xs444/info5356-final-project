@@ -16,6 +16,10 @@ so the game never stalls.
 
 How to wire it into the game: see [INTEGRATION.md](INTEGRATION.md).
 
+**No OpenAI key? It still works.** Without a key, Quizzy uses the Mac voice, local Whisper recognition and
+scripted teaching lines. That is the same path it takes when the network drops. Add a key to `.env`
+later to switch to the OpenAI voice and transcription; no code changes are needed.
+
 ## Setup (Mac recommended, Python 3.10+)
 
 ```bash
