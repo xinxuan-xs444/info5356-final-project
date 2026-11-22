@@ -1,0 +1,36 @@
+--- a/quizzy-mini/main.py
++++ b/quizzy-mini/main.py
+@@ -27,6 +27,8 @@
+         terminal_output(event, **data)
+         if speech is not None and event == "say":
+             speech.say(data["text"])
++        if robot is not None and event == "buzz_open":
++            robot.look_neutral()  # head forward before vision's buzz window opens
+         if vision is not None:
+             if event == "buzz_open":
+                 vision.open_buzz(data["seats"])
+@@ -43,16 +45,23 @@
+                 robot.set_score(team, score)
+         elif event == "reset":
+             robot.reset()
++        elif event == "state":
++            robot.on_state(data["state"])  # optional: idle/celebratory/teaching animation
+ 
+     return GameController(emit=output)
+ 
+ 
+ def main() -> None:
+     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
++    from robot_motion import RobotMotion
++
++    robot = RobotMotion()   # dry_run=True for a laptop with no robot attached
+     try:
+-        OperatorConsole(create_game()).run()
++        OperatorConsole(create_game(robot=robot)).run()
+     except KeyboardInterrupt:
+         print("\nGame console closed.")
++    finally:
++        robot.close()
+ 
+ 
+ if __name__ == "__main__":

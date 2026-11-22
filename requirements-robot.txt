@@ -1,0 +1,6 @@
+# Module 4 (robot motion & scoreboard). Install with: pip install -r requirements-robot.txt
+# reachy-mini         # uncomment to run against real hardware (RobotMotion falls back to
+                       # dry-run automatically if this isn't installed / can't connect)
+pytest>=8              # robot_motion tests
+# Tkinter (for scoreboard.py) ships with the python.org installer; on Homebrew macOS Python,
+# run: brew install python-tk
