@@ -18,9 +18,9 @@ class GameTests(unittest.TestCase):
             emit=lambda event, **data: self.events.append((event, data)),
         )
 
-    def start(self, count=4):
+    def start(self):
         for seat, name, color in [(1, "Maya Chen", "red"), (2, "Alex", "blue"),
-                                  (3, "Sam", "red"), (4, "Emma", "blue")][:count]:
+                                  (3, "Sam", "red"), (4, "Emma", "blue")]:
             self.game.add_player(name, seat, color)
         self.game.start()
 
@@ -159,11 +159,37 @@ class GameTests(unittest.TestCase):
         self.game.answer(self.game.round.question["answer"])
         self.assertEqual(self.game.winner, "blue")
 
-    def test_three_player_head_start_and_deadline(self):
-        self.start(3)
-        self.assertEqual(self.game.teams["blue"].score, 1)
-        self.advance(config.GAME_DURATION)
-        self.assertEqual(self.game.winner, "blue")
+    def test_requires_four_players_and_two_per_team(self):
+        self.game.add_player("Maya", 1, "red")
+        self.game.add_player("Sam", 2, "red")
+        self.game.add_player("Riley", 3, "red")
+        with self.assertRaisesRegex(ValueError, "Register 4 or 5 players"):
+            self.game.start()
+        self.game.add_player("Emma", 4, "blue")
+        with self.assertRaisesRegex(ValueError, "at least two players on each team"):
+            self.game.start()
+        self.game.add_player("Alex", 5, "blue")
+        self.game.start()
+        self.assertEqual(self.game.state, GameState.THINK)
+
+    def test_five_players_can_buzz_and_steal(self):
+        for larger_team, other_team in (("red", "blue"), ("blue", "red")):
+            with self.subTest(larger_team=larger_team):
+                self.game.reset()
+                for seat in (1, 3, 5):
+                    self.game.add_player(f"Player {seat}", seat, larger_team)
+                for seat in (2, 4):
+                    self.game.add_player(f"Player {seat}", seat, other_team)
+                self.game.start()
+                self.assertEqual([team.score for team in self.game.teams.values()], [0, 0])
+                self.advance(config.THINK_DURATION)
+                self.assertEqual(self.game.eligible_seats(), (1, 2, 3, 4, 5))
+                self.assertTrue(self.game.buzz(2))
+                self.assertTrue(self.game.answer(judgment=False))
+                self.assertEqual(self.game.eligible_seats(), (1, 3, 5))
+                self.assertTrue(self.game.buzz(5))
+                self.assertTrue(self.game.answer(judgment=True))
+                self.assertEqual(self.game.teams[larger_team].score, 1)
 
     def test_addressing_pause_override_skip_and_reset(self):
         self.start()

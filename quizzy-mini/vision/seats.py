@@ -1,8 +1,8 @@
-"""Maps detected people to Seats 1-4 using fixed vertical zones in the image.
+"""Maps detected people to numbered seats using fixed vertical zones in the image.
 
 Seats never move during a game, so instead of tracking identities we split
 the frame into left-to-right zones once (uniformly, or calibrated from where
-the four students actually sit) and assign each person by the horizontal
+the students actually sit) and assign each person by the horizontal
 position of their shoulders.
 
 This relies on the robot's head (and so its camera) being in the same neutral

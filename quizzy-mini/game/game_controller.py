@@ -65,12 +65,12 @@ class GameController:
         if self.state is not GameState.INTRODUCE:
             raise ValueError("Register players before starting")
         if not 1 <= seat <= config.MAX_PLAYERS or seat in self.players:
-            raise ValueError("Choose an unused seat from 1 to 4")
+            raise ValueError(f"Choose an unused seat from 1 to {config.MAX_PLAYERS}")
         color = color.lower()
         if color not in self.teams or not name.strip():
             raise ValueError("Provide a name and a team color (red or blue)")
         team = self.teams[color]
-        if len(team.players) >= config.MAX_PLAYERS // 2:
+        if len(team.players) >= (config.MAX_PLAYERS + 1) // 2:
             raise ValueError("That team is full")
         player = Player(f"P{seat:02}", name.strip(), seat, color)
         self.players[seat] = player
@@ -80,12 +80,12 @@ class GameController:
         if self.state is not GameState.INTRODUCE:
             raise ValueError("Reset before starting another game")
         if not config.MIN_PLAYERS <= len(self.players) <= config.MAX_PLAYERS:
-            raise ValueError("Register 3 or 4 players")
+            raise ValueError(f"Register {config.MIN_PLAYERS} or {config.MAX_PLAYERS} players")
+        if any(len(team.players) < config.MIN_PLAYERS // 2 for team in self.teams.values()):
+            raise ValueError("Register at least two players on each team")
         if self.addressing_mode not in (config.ADDRESSING_NAME, config.ADDRESSING_TEAM):
             raise ValueError("Choose name or team addressing")
         self.game_deadline = self.clock() + config.GAME_DURATION
-        for team in self.teams.values():
-            team.score = int(len(team.players) == 1)
         self.publish_scores()
         self.next_question()
 

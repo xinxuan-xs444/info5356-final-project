@@ -7,8 +7,8 @@
 Keys:
     SPACE  open a buzz window for all seats (10 s)
     r / b  open a steal-style window for seats 1-2 only / seats 3-4 only
-    m 1-4  manual override: award the open window to that seat
-    c      calibrate seat zones from the 4 people currently visible
+    m + seat number  manual override: award the open window to that seat
+    c                calibrate seat zones from the people currently visible
     s      save seat zones to --seats file
     q/ESC  quit
 
@@ -23,12 +23,14 @@ import time
 
 import cv2
 
+import config
+
 from .seats import SeatMap
 from .service import VisionService
 from .sources import OpenCVSource, ReachyMiniSource
 from .viz import draw
 
-HELP = "SPACE all | r seats 1-2 | b seats 3-4 | m+1..4 manual | c calibrate | s save | q quit"
+HELP = "SPACE all | r first two seats | b remaining seats | m+seat manual | c calibrate | s save | q quit"
 
 
 def _make_source(spec: str, loop: bool):
@@ -43,6 +45,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", default="0", help="webcam index, video path, or 'reachy'")
     ap.add_argument("--seats", default="seats.json", help="seat-zone file (loaded if it exists)")
+    ap.add_argument("--players", type=int, choices=range(config.MIN_PLAYERS, config.MAX_PLAYERS + 1),
+                    help="number of seat zones when creating a new calibration")
     ap.add_argument("--weights", default="yolo11n-pose.pt")
     ap.add_argument("--device", default=None, help="cpu / mps / cuda:0 (default: auto)")
     ap.add_argument("--timeout", type=float, default=10.0, help="buzz window length in seconds")
@@ -55,10 +59,13 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         seat_map = SeatMap.load(args.seats)
+        if args.players is not None and args.players != len(seat_map.seat_ids):
+            ap.error("--players differs from the existing seat map. Choose a new --seats path.")
         print(f"loaded seat zones from {args.seats}")
     except FileNotFoundError:
-        seat_map = SeatMap.uniform()
-        print("using uniform seat zones (press c with 4 people visible to calibrate)")
+        players = args.players if args.players is not None else config.MIN_PLAYERS
+        seat_map = SeatMap.uniform(seat_ids=range(1, players + 1))
+        print(f"using uniform seat zones (press c with {players} people visible to calibrate)")
 
     svc = VisionService(
         _make_source(args.source, args.loop),
@@ -112,7 +119,7 @@ def main(argv: list[str] | None = None) -> None:
             t_prev = now
 
             img = draw(res, svc.seat_map, last_winner=last_winner, fps=fps)
-            cv2.putText(img, HELP + ("  [MANUAL: press 1-4]" if manual_mode else ""),
+            cv2.putText(img, HELP + ("  [MANUAL: press a seat number]" if manual_mode else ""),
                         (8, img.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.imshow("Quizzy vision debug", img)
             key = cv2.waitKey(1) & 0xFF
@@ -130,7 +137,7 @@ def main(argv: list[str] | None = None) -> None:
                 svc.open_buzz_window(seat_map.seat_ids[2:], args.timeout, on_result)
             elif key == ord("m"):
                 manual_mode = True
-            elif manual_mode and chr(key) in "1234":
+            elif manual_mode and chr(key) in {str(seat) for seat in seat_map.seat_ids}:
                 manual_mode = False
                 if not svc.manual_buzz(int(chr(key))):
                     print("no window open")

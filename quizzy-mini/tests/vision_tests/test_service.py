@@ -68,6 +68,17 @@ def test_steal_window_only_accepts_eligible_seats(svc, clock):
     assert res.buzz.seat == 4
 
 
+def test_fifth_seat_can_buzz(clock):
+    centers = [80, 240, 400, 560, 720]
+    seat_map = SeatMap.from_person_centers([x / IMG.shape[1] for x in centers], seat_ids=range(1, 6))
+    svc = VisionService(ListSource([]), ScriptedEstimator([[]]), seat_map, clock=clock)
+    svc.open_buzz([5])
+    hands_down = [make_pose(x) for x in centers]
+    fifth_raised = hands_down[:-1] + [make_pose(centers[-1], raised="right")]
+    res = feed(svc, clock, [hands_down] * 5 + [fifth_raised] * 15)
+    assert res.buzz.seat == 5
+
+
 def test_timeout_returns_none(svc, clock):
     got = []
     svc.open_buzz_window(timeout_s=1.0, on_result=got.append)
