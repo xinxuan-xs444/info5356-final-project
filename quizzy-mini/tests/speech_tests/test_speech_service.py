@@ -5,7 +5,7 @@ import time
 import unittest
 
 from speech.llm import LLMHelper
-from speech.speech import ANSWER, DONT_KNOW, SpeechService
+from speech.speech import ANSWER, DONT_KNOW, TAKE_YOUR_TIME, UNCLEAR_LINE, SpeechService
 
 from .helpers import PromptListener, QuietTTS, wait_for
 
@@ -18,13 +18,16 @@ def llm_returning(value):
 
 
 class ServiceTestCase(unittest.TestCase):
-    def make(self, answers=(), chatter=(), names=(), *, tts=None, llm=None, **kw):
+    def make(self, answers=(), chatter=(), names=(), *, tts=None, llm=None, encourage=False, **kw):
+        kw.setdefault("line_pause", 0)
         self.answers = queue.Queue()
         self.tts = tts or QuietTTS()
         self.listener = PromptListener(answers, chatter, names)
         self.service = SpeechService(self.tts, self.listener, llm=llm, on_answer=self.answers.put,
                                      transcribe_budget=0.2, **kw)
         self.listener.service = self.service
+        if not encourage:
+            self.service.encourage_after = 1e9
         self.service.start()
         self.addCleanup(self.service.stop)
         return self.service
@@ -123,26 +126,43 @@ class AnswerWindow(ServiceTestCase):
         self.make(answers=["is it 14 or 15?", "fifteen"])
         self.open_window(timeout=3)
         self.assertEqual(self.next_answer().value, 15)
-        self.assertIn("Just the number, please.", self.tts.spoken)
+        self.assertIn(UNCLEAR_LINE, self.tts.spoken)
 
     def test_unclear_goes_to_llm_when_available(self):
         self.make(answers=["it's 14 dollars for 7 slices"], llm=llm_returning(14))
         self.open_window()
         heard = self.next_answer()
         self.assertEqual((heard.value, heard.source), (14, "llm"))
-        self.assertNotIn("Just the number, please.", self.tts.spoken)
+        self.assertNotIn(UNCLEAR_LINE, self.tts.spoken)
 
     def test_llm_unsure_falls_back_to_asking(self):
         self.make(answers=["is it 14 or 15?", "15"], llm=llm_returning(None))
         self.open_window(timeout=3)
         self.assertEqual(self.next_answer().value, 15)
-        self.assertIn("Just the number, please.", self.tts.spoken)
+        self.assertIn(UNCLEAR_LINE, self.tts.spoken)
 
     def test_silence_delivers_nothing(self):
         self.make(answers=[])
         self.open_window(timeout=1.5)
         with self.assertRaises(queue.Empty):
             self.answers.get(timeout=1.8)
+
+    def test_quiet_player_hears_take_your_time_once_then_answers(self):
+        service = self.make(answers=[None, None, "fourteen"], encourage=True)
+        self.open_window(timeout=8)
+        self.assertEqual(self.next_answer(timeout=9).value, 14)
+        service.wait_until_quiet(2)
+        self.assertEqual(sum(line in TAKE_YOUR_TIME for line in self.tts.spoken), 1)
+        first_call = self.listener.answer_calls()[0]
+        self.assertGreater(first_call[1], 4)                     # still the full window, not cut short
+
+    def test_lines_have_a_short_pause_between_them(self):
+        service = self.make(line_pause=0.2)
+        started = time.monotonic()
+        for line in ["one", "two", "three"]:
+            service.say(line)
+        service.wait_until_quiet(3)
+        self.assertGreaterEqual(time.monotonic() - started, 0.35)
 
     def test_window_closing_cancels_listening(self):
         service = self.make()

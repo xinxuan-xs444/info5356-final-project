@@ -1,6 +1,7 @@
 """TTS text cleanup, endpointing, resampling and recorder/transcriber plumbing (no real devices)."""
 
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -165,6 +166,14 @@ class ListenerPlumbing(unittest.TestCase):
         self.assertFalse(is_prompt_echo("I think it's fourteen", NUMBER_PROMPT))
         self.assertFalse(is_prompt_echo("fourteen", None))
 
+    def test_whisper_download_never_sends_a_saved_hf_login(self):
+        fake = mock.MagicMock()
+        with mock.patch.dict("sys.modules", {"faster_whisper": fake}), mock.patch.dict("os.environ", {}, clear=True):
+            WhisperSTT("base.en").load()
+            import os
+            self.assertEqual(os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN"), "1")
+        self.assertIs(fake.WhisperModel.call_args.kwargs["use_auth_token"], False)
+
     def test_scripted_listener(self):
         listener = ScriptedListener(["fourteen", None])
         self.assertEqual(listener.listen(5, "prompt").text, "fourteen")
@@ -182,6 +191,44 @@ if __name__ == "__main__":
 
 class FakeDevices(unittest.TestCase):
     """Exercise the real recorder / robot code paths against fake hardware."""
+
+    def fake_sounddevice(self, audio):
+        class FakeStream:
+            def __init__(self, device, channels, samplerate, blocksize, dtype, callback):
+                self.callback, self.blocksize = callback, blocksize
+                self.stop = threading.Event()
+
+            def __enter__(self):
+                def run():
+                    for start in range(0, len(audio), self.blocksize):
+                        if self.stop.is_set():
+                            return
+                        self.callback(audio[start:start + self.blocksize].reshape(-1, 1), self.blocksize, None, None)
+                        time.sleep(self.blocksize / 48000)          # real-time pacing
+                threading.Thread(target=run, daemon=True).start()
+                return self
+
+            def __exit__(self, *exc):
+                self.stop.set()
+
+        fake_sd = mock.MagicMock()
+        fake_sd.query_devices.return_value = {"name": "Mic", "default_samplerate": 48000.0}
+        fake_sd.InputStream = FakeStream
+        return fake_sd
+
+    def test_start_timeout_stops_early_when_nobody_talks(self):
+        with mock.patch.dict("sys.modules", {"sounddevice": self.fake_sounddevice(silence(6.0, rate=48000))}):
+            started = time.monotonic()
+            clip = stt.SoundDeviceRecorder().record(6.0, start_timeout=1.0)
+        self.assertFalse(clip.speech_detected)
+        self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_start_timeout_does_not_cut_off_a_player_who_started(self):
+        audio = np.concatenate([silence(0.8, rate=48000), tone(1.5, rate=48000), silence(2.0, rate=48000)])
+        with mock.patch.dict("sys.modules", {"sounddevice": self.fake_sounddevice(audio)}):
+            clip = stt.SoundDeviceRecorder().record(6.0, start_timeout=1.0)
+        self.assertTrue(clip.speech_detected)
+        self.assertGreater(clip.duration, 1.5)
 
     def test_sounddevice_recorder_records_resamples_and_stops_at_silence(self):
         audio = np.concatenate([silence(0.3, rate=48000), tone(0.8, rate=48000), silence(3.0, rate=48000)])
@@ -214,7 +261,7 @@ class FakeDevices(unittest.TestCase):
             clip = recorder.record(5.0)
         self.assertTrue(clip.speech_detected)
         self.assertGreater(clip.duration, 0.8)
-        self.assertLess(clip.duration, 2.0)          # stopped at the pause, not after 5 s
+        self.assertLess(clip.duration, 2.6)          # stopped at the pause, not after 5 s
         self.assertEqual(clip.samples.dtype, np.float32)
 
     def test_reachy_recorder_uses_sdk_chunks(self):

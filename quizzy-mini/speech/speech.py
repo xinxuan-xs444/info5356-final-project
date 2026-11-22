@@ -43,6 +43,8 @@ log = logging.getLogger(__name__)
 
 ANSWER = "answer"
 DONT_KNOW = "dont_know"
+UNCLEAR_LINE = "Sorry, I didn't catch that. Can you say just the number?"
+TAKE_YOUR_TIME = ["Take your time.", "No rush, think it through.", "Take your time, you've got this."]
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,7 @@ class SpeechService:
         repeat_states: tuple[str, ...] | None = None,
         min_confidence: float | None = None,
         transcribe_budget: float | None = None,
+        line_pause: float | None = None,
         question_provider: Callable[[], dict | None] | None = None,
     ) -> None:
         """`listener` needs listen(max_seconds, prompt, cancel) -> Heard (see stt.py).
@@ -96,6 +99,9 @@ class SpeechService:
         self.min_confidence = config.ANSWER_MIN_CONFIDENCE if min_confidence is None else min_confidence
         self.transcribe_budget = config.STT_TRANSCRIBE_BUDGET if transcribe_budget is None else transcribe_budget
         self.question_provider = question_provider
+        self.line_pause = getattr(config, "TTS_LINE_PAUSE", 0.3) if line_pause is None else line_pause
+        self.encourage_after = getattr(config, "ENCOURAGE_AFTER", 4.0)
+        self._encourage_index = 0
 
         self._lines: queue.Queue = queue.Queue()
         self._pending = 0                       # lines queued or being spoken
@@ -213,6 +219,8 @@ class SpeechService:
             if text is None:
                 return
             self._speak_one(text)
+            if self.line_pause and not self._lines.empty():
+                time.sleep(self.line_pause)          # a short breath between lines sounds less robotic
 
     def _drain_inline(self) -> None:
         while True:
@@ -318,16 +326,20 @@ class SpeechService:
                 log.exception("Speech input failed")
                 time.sleep(0.2)
 
-    def _listen(self, seconds: float, prompt: str, cancel) -> Heard:
+    def _listen(self, seconds: float, prompt: str, cancel, start_timeout: float | None = None) -> Heard:
         started = time.monotonic()
         with self._mic:
-            heard = self.listener.listen(seconds, prompt, cancel)
+            if start_timeout is None:
+                heard = self.listener.listen(seconds, prompt, cancel)
+            else:
+                heard = self.listener.listen(seconds, prompt, cancel, start_timeout=start_timeout)
         if not heard.text and time.monotonic() - started < 0.2:
             cancel.wait(0.2)                     # a broken mic returns instantly: do not spin
         return heard
 
     def _run_answer(self, job: _Job) -> None:
         asked_for_number = False
+        encouraged = False
         while self._current(job):
             if not self.wait_until_quiet(timeout=max(0.0, job.deadline - self.clock())):
                 return
@@ -335,10 +347,16 @@ class SpeechService:
             if remaining < 1.0 or not self._current(job):
                 log.info("Seat %s: answer window closed with nothing usable heard", job.seat)
                 return
-            heard = self._listen(remaining, NUMBER_PROMPT, job.cancel)
+            # If the player is quiet for a while, Quizzy says "Take your time." once, then keeps listening.
+            nudge_after = self.encourage_after if not encouraged and remaining > self.encourage_after + 3 else None
+            heard = self._listen(remaining, NUMBER_PROMPT, job.cancel, start_timeout=nudge_after)
             if not self._current(job):
                 return
             result = parse_answer(heard.text)
+            if nudge_after is not None and result.intent is Intent.NONE and not heard.text:
+                encouraged = True
+                self.say(self._encouragement())
+                continue
 
             if result.intent is Intent.ANSWER and result.confidence >= self.min_confidence:
                 self._deliver(job, ANSWER, result.value, heard.text, result.confidence, "parser")
@@ -356,9 +374,14 @@ class SpeechService:
                     return
                 if not asked_for_number:
                     asked_for_number = True
-                    self.say("Just the number, please.")
+                    self.say(UNCLEAR_LINE)
                     continue
             # Silence, or still unclear after asking once: keep listening until the window closes.
+
+    def _encouragement(self) -> str:
+        line = TAKE_YOUR_TIME[self._encourage_index % len(TAKE_YOUR_TIME)]
+        self._encourage_index += 1
+        return line
 
     def _ask_llm(self, text: str, job: _Job) -> float | None:
         if not text or not self.llm.available:
@@ -445,7 +468,7 @@ def build_speech_service(*, mini=None, on_answer: Callable[[HeardAnswer], None] 
     from .tts import make_tts
 
     c = lambda name, default: getattr(config, name, default)   # noqa: E731
-    tts = make_tts(c("TTS_ENGINE", "openai"), voice=c("TTS_VOICE", None), rate=c("TTS_RATE", 165),
+    tts = make_tts(c("TTS_ENGINE", "openai"), voice=c("TTS_VOICE", None), rate=c("TTS_RATE", 150),
                    device=c("SPEAKER_DEVICE", None), mini=mini, fallback=c("TTS_FALLBACK", "auto"),
                    openai_model=c("TTS_OPENAI_MODEL", "gpt-4o-mini-tts"), openai_voice=c("TTS_OPENAI_VOICE", "coral"),
                    instructions=c("TTS_INSTRUCTIONS", None), timeout=c("TTS_TIMEOUT", 6.0))
@@ -456,7 +479,7 @@ def build_speech_service(*, mini=None, on_answer: Callable[[HeardAnswer], None] 
                 mini=mini, device=c("MIC_DEVICE", None), engine=c("STT_ENGINE", "openai"),
                 openai_model=c("STT_OPENAI_MODEL", "gpt-4o-transcribe"), local_model=c("STT_LOCAL_MODEL", "base.en"),
                 compute_type=c("STT_COMPUTE_TYPE", "int8"), timeout=c("STT_TIMEOUT", 2.5),
-                min_rms=c("STT_MIN_SPEECH_RMS", 0.01), end_silence=c("STT_END_SILENCE", 0.8),
+                min_rms=c("STT_MIN_SPEECH_RMS", 0.01), end_silence=c("STT_END_SILENCE", 1.2),
             )
             listener.transcriber.load()
             listener.transcriber.warm_up()

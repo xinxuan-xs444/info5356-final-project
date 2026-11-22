@@ -31,7 +31,8 @@ TTS_INSTRUCTIONS = None        # None = the built-in game-show host style (speec
 TTS_TIMEOUT = 6.0              # seconds before a line falls back to the local voice
 TTS_FALLBACK = "auto"          # local voice: "auto" (say on macOS, pyttsx3 elsewhere), "say", "pyttsx3", "print"
 TTS_VOICE = "Samantha"         # macOS `say` voice for the fallback; list with: say -v '?'
-TTS_RATE = 165                 # words per minute for the fallback voice
+TTS_RATE = 150                 # words per minute for the fallback voice (a bit slow, for kids)
+TTS_LINE_PAUSE = 0.3           # short pause between consecutive lines
 SPEAKER_DEVICE = None          # None = default, or a name substring such as "Reachy"
 MIC_DEVICE = None              # list devices with: python -m speech.demo devices
 
@@ -42,7 +43,8 @@ STT_TIMEOUT = 2.5              # seconds to wait for a transcript before giving 
 STT_LOCAL_MODEL = "base.en"    # offline backup (pip install faster-whisper)
 STT_COMPUTE_TYPE = "int8"
 STT_MIN_SPEECH_RMS = 0.01      # quietest level that still counts as speech (0-1 scale)
-STT_END_SILENCE = 0.8          # seconds of silence that ends an utterance
+STT_END_SILENCE = 1.2          # seconds of silence that ends an answer (room for "um... fourteen")
+ENCOURAGE_AFTER = 4.0          # quiet this long in an answer window -> "Take your time." (once)
 STT_TRANSCRIBE_BUDGET = 2.5    # seconds kept free at the end of an answer window for transcription
 
 ANSWER_MIN_CONFIDENCE = 0.5    # parser confidence below this is treated as "unclear"

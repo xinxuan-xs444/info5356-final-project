@@ -19,6 +19,7 @@ numpy, sounddevice and faster-whisper are imported lazily, so the rest of the pa
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -49,7 +50,8 @@ class AudioClip:
 
 
 class Recorder(Protocol):
-    def record(self, max_seconds: float, cancel: threading.Event | None = None) -> AudioClip: ...
+    def record(self, max_seconds: float, cancel: threading.Event | None = None,
+               start_timeout: float | None = None) -> AudioClip: ...
     def close(self) -> None: ...
 
 
@@ -70,7 +72,7 @@ class Endpointer:
 
     MAX_NOISE = 0.04
 
-    def __init__(self, *, min_rms: float = 0.01, end_silence: float = 0.8, start_seconds: float = 0.09,
+    def __init__(self, *, min_rms: float = 0.01, end_silence: float = 1.2, start_seconds: float = 0.09,
                  preroll: float = 0.3, max_speech: float = 8.0, calibration: float = 0.15) -> None:
         self.min_rms = min_rms
         self.end_silence = end_silence
@@ -164,7 +166,10 @@ class SoundDeviceRecorder:
         self._make_endpointer = endpointer or Endpointer
         log.info("Microphone: %s (%d Hz)", self.name, self.rate)
 
-    def record(self, max_seconds: float, cancel: threading.Event | None = None) -> AudioClip:
+    def record(self, max_seconds: float, cancel: threading.Event | None = None,
+               start_timeout: float | None = None) -> AudioClip:
+        """Record one utterance. Stops at the pause after speech, at max_seconds, or, if nobody
+        has started talking by start_timeout seconds, right then."""
         import queue
 
         blocks: "queue.Queue" = queue.Queue()
@@ -174,10 +179,13 @@ class SoundDeviceRecorder:
         def callback(indata, frames, time_info, status):   # runs on the audio thread
             blocks.put(indata[:, 0].copy())
 
-        deadline = time.monotonic() + max(0.0, max_seconds)
+        started = time.monotonic()
+        deadline = started + max(0.0, max_seconds)
         with self._sd.InputStream(device=self.device, channels=1, samplerate=self.rate,
                                   blocksize=block_size, dtype="float32", callback=callback):
             while time.monotonic() < deadline and not (cancel and cancel.is_set()):
+                if start_timeout and not endpointer.started and time.monotonic() - started >= start_timeout:
+                    break
                 try:
                     block = blocks.get(timeout=0.1)
                 except queue.Empty:
@@ -201,12 +209,16 @@ class ReachyMiniRecorder:
         self._make_endpointer = endpointer or Endpointer
         self.media.start_recording()
 
-    def record(self, max_seconds: float, cancel: threading.Event | None = None) -> AudioClip:
+    def record(self, max_seconds: float, cancel: threading.Event | None = None,
+               start_timeout: float | None = None) -> AudioClip:
         while self.media.get_audio_sample() is not None:     # drop audio buffered while not listening
             pass
         endpointer = self._make_endpointer()
-        deadline = time.monotonic() + max(0.0, max_seconds)
+        started = time.monotonic()
+        deadline = started + max(0.0, max_seconds)
         while time.monotonic() < deadline and not (cancel and cancel.is_set()):
+            if start_timeout and not endpointer.started and time.monotonic() - started >= start_timeout:
+                break
             block = self.media.get_audio_sample()
             if block is None:
                 time.sleep(0.01)
@@ -265,9 +277,12 @@ class WhisperSTT:
             if self._model is not None:
                 return self
             try:
+                # Public model: never send a saved Hugging Face login (an expired one causes a 401).
+                os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
                 from faster_whisper import WhisperModel
 
-                self._model = WhisperModel(self.model_name, device="cpu", compute_type=self.compute_type)
+                self._model = WhisperModel(self.model_name, device="cpu", compute_type=self.compute_type,
+                                           use_auth_token=False)
                 self._backend = "faster-whisper"
             except ImportError:
                 import whisper  # openai-whisper
@@ -370,8 +385,11 @@ class Listener:
         self.transcriber = transcriber
 
     def listen(self, max_seconds: float, prompt: str | None = None,
-               cancel: threading.Event | None = None) -> Heard:
-        clip = self.recorder.record(max_seconds, cancel)
+               cancel: threading.Event | None = None, start_timeout: float | None = None) -> Heard:
+        if start_timeout is None:
+            clip = self.recorder.record(max_seconds, cancel)
+        else:
+            clip = self.recorder.record(max_seconds, cancel, start_timeout)
         if cancel is not None and cancel.is_set():
             return Heard("", clip.duration)
         started = time.monotonic()
@@ -403,7 +421,7 @@ class ScriptedListener:
             self.lines.extend(lines)
 
     def listen(self, max_seconds: float, prompt: str | None = None,
-               cancel: threading.Event | None = None) -> Heard:
+               cancel: threading.Event | None = None, start_timeout: float | None = None) -> Heard:
         with self._lock:
             line = self.lines.popleft() if self.lines else None
             self.calls.append((max_seconds, prompt))
@@ -422,7 +440,7 @@ class ScriptedListener:
 def make_listener(*, mini=None, device: str | int | None = None, engine: str = "openai",
                   openai_model: str = "gpt-4o-transcribe", local_model: str = "base.en",
                   compute_type: str = "int8", timeout: float = 2.5, min_rms: float = 0.01,
-                  end_silence: float = 0.8) -> Listener:
+                  end_silence: float = 1.2) -> Listener:
     """Mic (robot SDK if `mini`, else sounddevice) + transcriber chosen by `engine`:
     "openai" (cloud, local Whisper as backup if installed) or "local" (offline Whisper only)."""
     def endpointer() -> Endpointer:

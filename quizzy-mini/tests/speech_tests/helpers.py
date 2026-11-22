@@ -43,13 +43,13 @@ class PromptListener:
         with self.lock:
             self.queues[NUMBER_PROMPT].extend(lines)
 
-    def listen(self, max_seconds, prompt=None, cancel=None) -> Heard:
+    def listen(self, max_seconds, prompt=None, cancel=None, start_timeout=None) -> Heard:
         speaking = bool(self.service and self.service.is_speaking)
         with self.lock:
             self.calls.append((prompt, max_seconds, speaking))
             queue = self.queues.get(prompt, deque())
             line = queue.popleft() if queue else None
-        wait = self.delay if line is not None else min(max_seconds, 0.1)
+        wait = self.delay if line is not None else min(max_seconds, start_timeout or 0.1, 0.1)
         end = time.monotonic() + wait
         while time.monotonic() < end:
             if cancel is not None and cancel.is_set():

@@ -40,7 +40,7 @@ from .teaching import TeachingCoach
 class TypedListener:
     """Keyboard stand-in for the microphone."""
 
-    def listen(self, max_seconds, prompt=None, cancel=None) -> Heard:
+    def listen(self, max_seconds, prompt=None, cancel=None, start_timeout=None) -> Heard:
         try:
             return Heard(input(f"  (type what the player says, {max_seconds:.0f}s) > "))
         except EOFError:
@@ -102,7 +102,7 @@ def cmd_listen(args, mini) -> None:
         while not args.count or count < args.count:
             count += 1
             start = time.monotonic()
-            heard = speech.listener.listen(8, NUMBER_PROMPT)
+            heard = speech.listener.listen(10, NUMBER_PROMPT)
             result = parse_answer(heard.text)
             print(f"  heard {heard.text!r} -> {result.intent.value}, value={result.value}, "
                   f"confidence={result.confidence:.2f} ({result.reason}); {time.monotonic() - start:.1f}s")
@@ -120,7 +120,11 @@ def cmd_round(args, mini) -> None:
 
     question = random.choice(QuestionBank().get_questions())
     answers: queue.Queue = queue.Queue()
+    window = max(config.ANSWER_DURATION, 15)     # the demo gives players a relaxed 15 s to answer
     with build(args, mini) as speech:
+        if speech.listener is None:
+            print("Stopping: speech recognition is not available (see the warning above).")
+            return
         coach = TeachingCoach(speech.llm)
         speech.on_answer = answers.put
         speech.handle_event("question", question=question["question"])
@@ -128,9 +132,9 @@ def cmd_round(args, mini) -> None:
 
         def ask(seat: int) -> float | None:
             speech.say(f"Seat {seat}, what's your answer?")
-            speech.handle_event("answer_open", seat=seat, timeout=config.ANSWER_DURATION)
+            speech.handle_event("answer_open", seat=seat, timeout=window)
             try:
-                heard = answers.get(timeout=config.ANSWER_DURATION + 1)
+                heard = answers.get(timeout=window + 1)
             except queue.Empty:
                 speech.say("Time is up.")
                 return None

@@ -169,9 +169,10 @@ coach.nudge(question, value)    # "Close! 2 is a step along the way." for a midd
 - **"Reads each problem twice."** The final proposal says Quizzy reads each problem twice. The game currently
   says it once (`test_question_is_said_once`), and players can ask for repeats. Speech supports either; it's
   Module 1's call.
-- **Answer window.** The 10 s window includes Quizzy saying "Maya, what's your answer?" (about 1.5 s) and 2.5 s
-  reserved for the OpenAI transcription, which leaves the player about 6 s to talk. That's plenty for a number.
-  If kids need longer, raise `ANSWER_DURATION`.
+- **Answer window (suggest 15 s).** The 10 s window includes Quizzy saying "Maya, what's your answer?" (about 1.5 s)
+  and 2.5 s reserved for transcription, which leaves about 6 s. In our first Mac test that felt rushed. Suggestion:
+  `ANSWER_DURATION = 15`. Speech already says "Take your time." after 4 s of quiet and waits 1.2 s of silence
+  before it treats an answer as finished.
 - **Shared key.** Everyone puts the same `OPENAI_API_KEY` in a `.env` at the repo root (`.env.example` shows
   the format). `.env` is already in `.gitignore`, so never commit it.
 - **Pause.** `game.pause()` emits no event, so a player can still be heard while paused. The game then rejects

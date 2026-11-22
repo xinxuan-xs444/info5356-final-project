@@ -51,12 +51,13 @@ python -m speech.demo round --offline  # rehearse the no-internet fallback
 
 1. The game emits `answer_open` (seat, 10 s). Speech waits until Quizzy finishes "Maya, what's your answer?" so
    the mic never records the robot.
-2. It records until the player has been quiet for 0.8 s, keeping 2.5 s at the end of the window for transcription.
+2. It records until the player has been quiet for 1.2 s (room for "um... fourteen"), keeping 2.5 s at the end of the
+   window for transcription. If nobody speaks for 4 s, Quizzy says "Take your time." once and keeps listening.
 3. The audio goes to `gpt-4o-transcribe`, and the local parser reads the number. Then:
    - clear number → `HeardAnswer(kind="answer", value=14)`; the game judges it with `check_answer()`
    - "Repeat, please" → re-reads the problem (max 2 per problem) and keeps listening
    - "I don't know" / "pass" → `kind="dont_know"`, so the other team can steal right away
-   - unclear (`"is it 14 or 15?"`) → asks `gpt-4o-mini` for the committed number, otherwise says "Just the number, please." once
+   - unclear (`"is it 14 or 15?"`) → asks `gpt-4o-mini` for the committed number, otherwise says "Sorry, I didn't catch that. Can you say just the number?" once
    - silence → nothing is sent; the game's own timer handles the timeout
 4. The game loop calls `apply_answer(game, heard)`.
 
@@ -68,7 +69,7 @@ The parser and the LLM never decide right or wrong. They only extract the number
 |---|---|
 | Voice | the same line in a local voice (macOS `say`, the robot speaker, or pyttsx3); if no local voice exists, the line is printed for the operator to read out |
 | Listening | local Whisper if `faster-whisper` is installed; otherwise the console shows **SPEECH RECOGNITION OFFLINE**, and the operator types `answer 14` (Wizard-of-Oz) |
-| LLM | scripted lines from `questions.json` ("Just the number, please.", hints, worked steps) |
+| LLM | scripted lines from `questions.json` ("Can you say just the number?", hints, worked steps) |
 
 Each call has a timeout (`TTS_TIMEOUT`, `STT_TIMEOUT`, `LLM_TIMEOUT`). After 3 failures in a row a service
 is skipped for 60 s, so later lines go straight to the fallback instead of waiting each time.
@@ -105,12 +106,14 @@ the Mac with the demo commands above.
 | `TTS_OPENAI_MODEL`, `TTS_OPENAI_VOICE` | `gpt-4o-mini-tts`, `coral` | `tts-1` is faster but has no style control |
 | `TTS_INSTRUCTIONS` | None | voice style; None = cheerful game-show host for 11–13 year olds |
 | `TTS_TIMEOUT` | 6 s | then that line uses the local voice |
-| `TTS_FALLBACK`, `TTS_VOICE`, `TTS_RATE` | auto, Samantha, 165 | the local voice |
+| `TTS_FALLBACK`, `TTS_VOICE`, `TTS_RATE` | auto, Samantha, 150 | the local voice |
 | `SPEAKER_DEVICE`, `MIC_DEVICE` | None | device name substrings; None = system default |
 | `STT_ENGINE`, `STT_OPENAI_MODEL` | `openai`, `gpt-4o-transcribe` | or `gpt-4o-mini-transcribe` / `whisper-1`; `local` = offline Whisper |
 | `STT_TIMEOUT` | 2.5 s | wait for a transcript |
 | `STT_MIN_SPEECH_RMS` | 0.01 | raise it in a loud room if noise triggers recording |
-| `STT_END_SILENCE` | 0.8 s | pause that ends an answer |
+| `STT_END_SILENCE` | 1.2 s | pause that ends an answer |
+| `ENCOURAGE_AFTER` | 4 s | quiet this long → "Take your time." (once per answer) |
+| `TTS_LINE_PAUSE` | 0.3 s | short breath between consecutive lines |
 | `STT_TRANSCRIBE_BUDGET` | 2.5 s | time kept free at the end of the answer window for transcription |
 | `ANSWER_MIN_CONFIDENCE` | 0.5 | below this, a parsed number counts as unclear |
 | `MAX_REPEATS` | 2 | "Repeat, please" requests per problem |
