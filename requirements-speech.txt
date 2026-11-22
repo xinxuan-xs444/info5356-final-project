@@ -1,0 +1,7 @@
+# Module 2 (speech). Install with: pip install -r requirements-speech.txt  (Python 3.10+)
+# OpenAI calls use the standard library; the key goes in .env (see .env.example).
+numpy>=1.24
+sounddevice>=0.4.6       # microphone and speaker; wheels include PortAudio on macOS and Windows
+faster-whisper>=1.0      # local speech recognition: used when there is no OpenAI key or no network (~140 MB model)
+# pyttsx3>=2.90          # optional backup voice off macOS (macOS uses the built-in `say`)
+# reachy-mini            # only for --robot (speaker and mics through the SDK)
