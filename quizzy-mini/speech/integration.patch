@@ -1,0 +1,94 @@
+--- a/quizzy-mini/main.py
++++ b/quizzy-mini/main.py
+@@ -1,6 +1,7 @@
+ """Run the terminal simulation and route controller events to optional adapters."""
+ 
+ import logging
++from queue import Queue
+ 
+ from game.game_controller import GameController
+ from operator_ui.operator_console import OperatorConsole
+@@ -25,8 +26,8 @@
+     """
+     def output(event, **data):
+         terminal_output(event, **data)
+-        if speech is not None and event == "say":
+-            speech.say(data["text"])
++        if speech is not None:
++            speech.handle_event(event, **data)
+         if vision is not None:
+             if event == "buzz_open":
+                 vision.open_buzz(data["seats"])
+@@ -44,15 +45,24 @@
+         elif event == "reset":
+             robot.reset()
+ 
+-    return GameController(emit=output)
++    game = GameController(emit=output)
++    if speech is not None:
++        speech.question_provider = lambda: game.round.question if game.round else None
++    return game
+ 
+ 
+ def main() -> None:
+     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
++    from speech import build_speech_service
++
++    answers = Queue()
++    speech = build_speech_service(on_answer=answers.put).start()   # later: mini=mini for the robot audio
+     try:
+-        OperatorConsole(create_game()).run()
++        OperatorConsole(create_game(speech=speech), answers=answers).run()
+     except KeyboardInterrupt:
+         print("\nGame console closed.")
++    finally:
++        speech.stop()
+ 
+ 
+ if __name__ == "__main__":
+--- a/quizzy-mini/operator_ui/operator_console.py
++++ b/quizzy-mini/operator_ui/operator_console.py
+@@ -7,6 +7,7 @@
+ 
+ import config
+ from game.game_controller import GameController, GameState
++from speech import apply_answer
+ 
+ logger = logging.getLogger(__name__)
+ HELP = (
+@@ -16,8 +17,9 @@
+ 
+ 
+ class OperatorConsole:
+-    def __init__(self, game: GameController) -> None:
++    def __init__(self, game: GameController, answers: Queue | None = None) -> None:
+         self.game = game
++        self.answers = answers
+ 
+     def run(self) -> None:
+         commands = Queue()
+@@ -37,6 +39,7 @@
+         Thread(target=read_commands, daemon=True).start()
+         while True:
+             self.game.update()
++            self.handle_spoken_answer()
+             try:
+                 command = commands.get(timeout=0.05)
+             except Empty:
+@@ -44,6 +47,16 @@
+             if not self.execute(command):
+                 return
+ 
++    def handle_spoken_answer(self) -> None:
++        if self.answers is None:
++            return
++        try:
++            heard = self.answers.get_nowait()
++        except Empty:
++            return
++        if apply_answer(self.game, heard):
++            logger.info("Spoken answer: %r -> %s", heard.text, heard.value if heard.value is not None else heard.kind)
++
+     def execute(self, command: str) -> bool:
+         action, _, argument = command.strip().partition(" ")
+         action = action.lower()
