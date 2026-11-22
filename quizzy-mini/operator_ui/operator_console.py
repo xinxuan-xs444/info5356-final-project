@@ -16,8 +16,9 @@ HELP = (
 
 
 class OperatorConsole:
-    def __init__(self, game: GameController) -> None:
+    def __init__(self, game: GameController, *, on_tick=None) -> None:
         self.game = game
+        self.on_tick = on_tick
 
     def run(self) -> None:
         commands = Queue()
@@ -37,6 +38,8 @@ class OperatorConsole:
         Thread(target=read_commands, daemon=True).start()
         while True:
             self.game.update()
+            if self.on_tick is not None:
+                self.on_tick()
             try:
                 command = commands.get(timeout=0.05)
             except Empty:

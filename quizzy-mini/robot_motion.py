@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -101,7 +102,7 @@ class RobotMotion:
         with self._lock:
             self._current_seat = seat
 
-    def look_neutral(self) -> None:
+    def look_neutral(self) -> bool:
         """Return the head to the pose vision assumes a buzz window will start from.
 
         Resolves vision/INTEGRATION.md's open item ("Agree on the exact call with the Module 4
@@ -110,9 +111,11 @@ class RobotMotion:
         See INTEGRATION.md step 3 for the exact main.py diff.
         """
         self._mark_activity()
-        self._run_safely(lambda: self._move_head(*config.HEAD_NEUTRAL_ANGLE))
-        with self._lock:
-            self._current_seat = None
+        arrived = self._move_head(*config.HEAD_NEUTRAL_ANGLE)
+        if arrived:
+            with self._lock:
+                self._current_seat = None
+        return arrived
 
     def wiggle_antennas(self) -> None:
         """Game event `buzz_open`: a quick "go!" wiggle on both antennas."""
@@ -216,16 +219,20 @@ class RobotMotion:
         index = max(0, min(len(angles) - 1, score))
         return angles[index]
 
-    def _move_head(self, yaw: float, pitch: float) -> None:
+    def _move_head(self, yaw: float, pitch: float) -> bool:
         yaw = _clamp(yaw, config.HEAD_SAFE_YAW_RANGE)
         pitch = _clamp(pitch, config.HEAD_SAFE_PITCH_RANGE)
-        self._log_event("look", yaw=yaw, pitch=pitch)
-        if self.dry_run:
-            return
         try:
-            self._mini.head.goto(yaw=yaw, pitch=pitch, duration=config.HEAD_MOVE_DURATION)
+            self._log_event("look", yaw=yaw, pitch=pitch)
+            if not self.dry_run:
+                from reachy_mini.utils import create_head_pose
+
+                self._mini.goto_target(head=create_head_pose(yaw=yaw, pitch=pitch, degrees=True),
+                                       duration=config.HEAD_MOVE_DURATION, body_yaw=None)
         except Exception:
             log.exception("head move failed; continuing")
+            return False
+        return True
 
     def _set_antenna_angle(self, team: str, angle: float) -> None:
         angle = _clamp(angle, config.ANTENNA_SAFE_RANGE)
@@ -233,8 +240,10 @@ class RobotMotion:
         if self.dry_run:
             return
         try:
-            antenna = getattr(self._mini.antennas, team)
-            antenna.goto(angle, duration=0.3)
+            _, current_angles = self._mini.get_current_joint_positions()
+            angles = list(current_angles)
+            angles[0 if team == "red" else 1] = math.radians(angle)
+            self._mini.goto_target(antennas=angles, duration=0.3, body_yaw=None)
         except Exception:
             log.exception("antenna move failed (team=%s); continuing", team)
 
