@@ -35,8 +35,11 @@ call if `vision`/`speech` are being wired in the same merge -- this patch only a
 
 ## Step 2 (optional): scoreboard
 
-`scoreboard.py`'s `Scoreboard` is a separate display, not part of the `robot` object -- wire
-it the same way, next to the existing `score`/`reset` dispatch:
+`scoreboard.py`'s `Scoreboard` is a separate display, not part of the `robot` object. macOS
+requires GUI windows to be created and driven from the main thread, so it must be
+constructed on main.py's main thread and *pumped* once per loop tick from wherever that
+thread already polls -- `OperatorConsole.run()`'s existing loop is the natural place
+(next to its `self.game.update()` call):
 
 ```python
 from scoreboard import Scoreboard
@@ -49,6 +52,11 @@ def output(event, **data):
         board.update(data["scores"])
     elif event == "reset":
         board.reset()
+```
+
+```python
+# in OperatorConsole.run()'s loop, next to self.game.update():
+board.pump()
 ```
 
 Requires a Tkinter-enabled Python (see `requirements-robot.txt`). Check readability on the
