@@ -1,16 +1,13 @@
-"""Optional LLM helper. Text in, text out; never audio, never judging.
+"""LLM helper (OpenAI Chat Completions, gpt-4o-mini). Text in, text out; never judging.
 
 Two jobs, both with scripted fallbacks in the callers:
   1. interpret_answer(): pull the final number out of a messy transcript
      ("it's 14 dollars for 7 slices") when the rule-based parser is unsure.
   2. explain(): one or two kid-friendly sentences about a wrong answer.
 
-Works with any OpenAI-compatible chat endpoint:
-  * Ollama on the laptop (nothing leaves the machine): `ollama run llama3.2:3b`
-  * OpenAI: set OPENAI_API_KEY in the environment.
-
-Every call has a hard timeout. After repeated failures the helper switches itself off for a
-minute so a dead network never slows the game down. Uses only the standard library.
+Uses OPENAI_API_KEY from the environment or .env. Every call has a hard timeout. After
+repeated failures the helper switches itself off for a minute so a dead network never
+slows the game down; callers then use their scripted lines. Standard library only.
 """
 
 from __future__ import annotations
@@ -18,19 +15,14 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import re
 import time
-import urllib.error
 import urllib.request
 from typing import Callable
 
 log = logging.getLogger(__name__)
 
-PROVIDERS = {
-    "ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2:3b", "key_env": None},
-    "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini", "key_env": "OPENAI_API_KEY"},
-}
+DEFAULT_MODEL = "gpt-4o-mini"
 
 _INTERPRET_SYSTEM = (
     "You extract a middle-school student's final numeric answer from a speech transcript. "
@@ -74,27 +66,23 @@ class LLMHelper:
         return cls(None, None)
 
     @classmethod
-    def from_config(cls, provider: str = "auto", model: str | None = None, timeout: float = 4.0) -> "LLMHelper":
+    def from_config(cls, provider: str = "openai", model: str | None = None, timeout: float = 4.0) -> "LLMHelper":
+        """provider "openai" (default) or "none". Without a key the helper is simply off."""
+        from .openai_api import API_BASE, api_key
+
         provider = (provider or "none").lower()
         if provider == "auto":
-            if _ollama_running(PROVIDERS["ollama"]["base_url"]):
-                provider = "ollama"
-            elif os.environ.get("OPENAI_API_KEY"):
-                provider = "openai"
-            else:
-                provider = "none"
-        if provider not in PROVIDERS:
+            provider = "openai"
+        if provider != "openai":
             if provider != "none":
                 log.warning("Unknown LLM provider %r; LLM features are off", provider)
             return cls.disabled()
-        spec = PROVIDERS[provider]
-        key = os.environ.get(spec["key_env"]) if spec["key_env"] else None
-        if spec["key_env"] and not key:
-            log.warning("%s is not set; LLM features are off", spec["key_env"])
+        key = api_key()
+        if not key:
+            log.warning("OPENAI_API_KEY not set (see .env.example); LLM features are off, scripted lines are used")
             return cls.disabled()
-        helper = cls(spec["base_url"], model or os.environ.get("LLM_MODEL") or spec["model"],
-                     api_key=key, timeout=timeout)
-        log.info("LLM helper: %s (%s)", provider, helper.model)
+        helper = cls(API_BASE, model or DEFAULT_MODEL, api_key=key, timeout=timeout)
+        log.info("LLM helper: OpenAI %s", helper.model)
         return helper
 
     @property
@@ -186,12 +174,3 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: float) -> dict
     request = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode())
-
-
-def _ollama_running(base_url: str) -> bool:
-    root = base_url.rsplit("/v1", 1)[0]
-    try:
-        with urllib.request.urlopen(f"{root}/api/tags", timeout=0.5) as response:
-            return response.status == 200
-    except (urllib.error.URLError, OSError, ValueError):
-        return False

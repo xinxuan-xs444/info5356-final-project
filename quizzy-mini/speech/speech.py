@@ -155,6 +155,12 @@ class SpeechService:
         with self._quiet:
             self._pending += 1
         self._chunk_cancel.set()                 # stop any background "repeat" recording
+        prepare = getattr(self.tts, "prepare", None)
+        if prepare is not None:                  # cloud voice: start fetching audio now
+            try:
+                prepare(speakable(text))
+            except Exception as error:
+                log.debug("prepare failed: %s", error)
         self._lines.put(text)
         if not self._running:                    # not started: speak inline (handy in scripts)
             self._drain_inline()
@@ -429,31 +435,37 @@ class _AnyEvent:
 
 def build_speech_service(*, mini=None, on_answer: Callable[[HeardAnswer], None] | None = None,
                          listen: bool = True, question_provider=None) -> SpeechService:
-    """Create a SpeechService from config.py. Pass `mini` (a connected ReachyMini) to use the
-    robot's speaker and microphones; without it the laptop's default devices are used.
-    Falls back to text-only output if audio packages or devices are missing."""
+    """Create a SpeechService from config.py (OpenAI voice, transcription and chat by default).
+
+    Pass `mini` (a connected ReachyMini) to use the robot's speaker and microphones; without it
+    the laptop's devices are used. Anything missing (no key, no network, no mic) degrades to a
+    local voice / printed lines and keyboard answers instead of stopping the game.
+    """
     from .stt import make_listener
     from .tts import make_tts
 
-    tts = make_tts(getattr(config, "TTS_ENGINE", "auto"), voice=getattr(config, "TTS_VOICE", None),
-                   rate=getattr(config, "TTS_RATE", 165), device=getattr(config, "SPEAKER_DEVICE", None), mini=mini)
+    c = lambda name, default: getattr(config, name, default)   # noqa: E731
+    tts = make_tts(c("TTS_ENGINE", "openai"), voice=c("TTS_VOICE", None), rate=c("TTS_RATE", 165),
+                   device=c("SPEAKER_DEVICE", None), mini=mini, fallback=c("TTS_FALLBACK", "auto"),
+                   openai_model=c("TTS_OPENAI_MODEL", "gpt-4o-mini-tts"), openai_voice=c("TTS_OPENAI_VOICE", "coral"),
+                   instructions=c("TTS_INSTRUCTIONS", None), timeout=c("TTS_TIMEOUT", 6.0))
     listener = None
     if listen:
         try:
             listener = make_listener(
-                mini=mini, device=getattr(config, "MIC_DEVICE", None),
-                model=getattr(config, "STT_MODEL", "base.en"),
-                compute_type=getattr(config, "STT_COMPUTE_TYPE", "int8"),
-                min_rms=getattr(config, "STT_MIN_SPEECH_RMS", 0.01),
-                end_silence=getattr(config, "STT_END_SILENCE", 0.8),
+                mini=mini, device=c("MIC_DEVICE", None), engine=c("STT_ENGINE", "openai"),
+                openai_model=c("STT_OPENAI_MODEL", "gpt-4o-transcribe"), local_model=c("STT_LOCAL_MODEL", "base.en"),
+                compute_type=c("STT_COMPUTE_TYPE", "int8"), timeout=c("STT_TIMEOUT", 2.5),
+                min_rms=c("STT_MIN_SPEECH_RMS", 0.01), end_silence=c("STT_END_SILENCE", 0.8),
             )
-            listener.transcriber.load().warm_up()
-        except Exception as error:   # no mic, no sounddevice, no whisper: keep the game playable
+            listener.transcriber.load()
+            listener.transcriber.warm_up()
+        except Exception as error:   # no mic or no sounddevice: keep the game playable
             log.warning("Speech input disabled (%s). Type answers in the operator console.", error)
             listener = None
-    llm = LLMHelper.from_config(getattr(config, "LLM_PROVIDER", "auto"), getattr(config, "LLM_MODEL", None),
-                                getattr(config, "LLM_TIMEOUT", 4.0))
-    return SpeechService(tts, listener, llm=llm, on_answer=on_answer, question_provider=question_provider)
+    llm = LLMHelper.from_config(c("LLM_PROVIDER", "openai"), c("LLM_MODEL", None), c("LLM_TIMEOUT", 4.0))
+    return SpeechService(tts, listener, llm=llm, on_answer=on_answer, question_provider=question_provider,
+                         transcribe_budget=c("STT_TRANSCRIBE_BUDGET", 2.5))
 
 
 def apply_answer(game, heard: HeardAnswer) -> bool:

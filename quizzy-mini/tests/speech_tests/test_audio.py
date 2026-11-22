@@ -40,6 +40,8 @@ class SpeakableText(unittest.TestCase):
         self.assertEqual(speakable("2 + 3 = 5 parts"), "2 plus 3 equals 5 parts")
         self.assertEqual(speakable("$14 and 25%"), "14 dollars and 25 percent")
         self.assertEqual(speakable("a ratio of 3:5"), "a ratio of 3 to 5")
+        self.assertEqual(speakable("Step 1: 18 ÷ 6 = 3 liters per minute."),
+                         "Step 1: 18 divided by 6 equals 3 liters per minute.")
         self.assertEqual(speakable("A 750-gram trail mix"), "A 750-gram trail mix")
 
     def test_every_bank_line_becomes_plain_words(self):
@@ -49,6 +51,10 @@ class SpeakableText(unittest.TestCase):
         for q in questions:
             for line in [q["question"], q["hint"], q["mini_question"], *q["solution"]]:
                 self.assertNotRegex(speakable(line), r"[×÷=−+]", line)
+            from speech.teaching import TeachingCoach
+            for line in TeachingCoach().solution_lines(q):
+                if line.startswith("Step "):
+                    self.assertRegex(speakable(line), r"^Step \d+: ", line)
 
 
 class Engines(unittest.TestCase):

@@ -1,11 +1,15 @@
 """Text-to-speech engines. Each one has speak(text) (blocks until done) and stop().
 
+  OpenAITTS      OpenAI gpt-4o-mini-tts game-show voice (openai_api.py), played by a player below
   MacSayTTS      macOS `say`; can route to the Reachy Mini speaker with audio_device="Reachy"
   ReachyMiniTTS  synthesizes with `say`, plays through the Reachy Mini SDK (mini.media)
-  Pyttsx3TTS     Windows / Linux fallback (pip install pyttsx3)
-  PrintTTS       prints the line; for tests and silent dry runs
+  Pyttsx3TTS     Windows / Linux voice (pip install pyttsx3)
+  PrintTTS       prints the line, so the operator can read it out if all audio fails
+  FallbackTTS    tries the OpenAI voice, falls back to a local one line by line
 
-make_tts() picks one from config.TTS_ENGINE. speakable() rewrites math symbols so the
+Players: SoundDevicePlayer (any speaker, by name) and ReachyMiniPlayer (robot speaker via SDK).
+
+make_tts() builds the chain from config.py. speakable() rewrites math symbols so the
 voice reads "4 × 3 = 12" as "4 times 3 equals 12".
 """
 
@@ -36,7 +40,7 @@ _SYMBOLS = [
     (r"×", " times "),
     (r"÷", " divided by "),
     (r"(?<=\d)\s*/\s*(?=\d)", " over "),
-    (r"(?<=\d)\s*:\s*(?=\d)", " to "),
+    (r"(?<=\d):(?=\d)", " to "),                  # 3:5, but not "Step 1: 18 ..."
     (r"=", " equals "),
     (r"−", " minus "),
     (r"(?<=\d)\s*\+\s*(?=\d)", " plus "),
@@ -51,6 +55,96 @@ def speakable(text: str) -> str:
     for pattern, replacement in _SYMBOLS:
         text = re.sub(pattern, replacement, text)
     return " ".join(text.split())
+
+
+class SoundDevicePlayer:
+    """Plays float32 audio on a sounddevice output (None = default, or a name substring like "Reachy")."""
+
+    def __init__(self, device: int | str | None = None) -> None:
+        import sounddevice as sd
+
+        from .stt import find_device
+
+        self._sd = sd
+        self.device = find_device(device, kind="output") if device is not None else None
+        self.rate = int(sd.query_devices(self.device, "output")["default_samplerate"])
+        self._stop = threading.Event()
+
+    def play(self, samples, rate: int) -> None:
+        from .stt import resample
+
+        self._stop.clear()
+        audio = resample(samples, rate, self.rate)
+        block = max(1, self.rate // 20)
+        with self._sd.OutputStream(device=self.device, samplerate=self.rate, channels=1, dtype="float32") as stream:
+            for start in range(0, len(audio), block):
+                if self._stop.is_set():
+                    return
+                stream.write(audio[start:start + block].reshape(-1, 1))
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+class ReachyMiniPlayer:
+    """Plays float32 audio through the robot speaker (`mini` is a connected ReachyMini)."""
+
+    def __init__(self, mini) -> None:
+        self.media = mini.media
+        self._stop = threading.Event()
+        self._started = False
+
+    def play(self, samples, rate: int) -> None:
+        from .stt import resample
+
+        self._stop.clear()
+        out_rate = self.media.get_output_audio_samplerate()
+        if out_rate and out_rate > 0 and out_rate != rate:
+            samples, rate = resample(samples, rate, out_rate), out_rate
+        if not self._started:
+            self.media.start_playing()
+            self._started = True
+        self.media.push_audio_sample(samples)
+        # push_audio_sample returns at once; wait for playback (interruptible) plus a small tail.
+        self._stop.wait(len(samples) / rate + 0.15)
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            self.media.clear_player()
+        except Exception:  # older SDKs: nothing queued to clear
+            pass
+
+
+class FallbackTTS:
+    """Speak with `primary` (the OpenAI voice); if it fails, say the same line with `fallback`."""
+
+    def __init__(self, primary, fallback) -> None:
+        self.primary, self.fallback = primary, fallback
+        self._current = None
+
+    def prepare(self, text: str) -> None:
+        prepare = getattr(self.primary, "prepare", None)
+        if prepare is not None:
+            prepare(text)
+
+    def speak(self, text: str) -> None:
+        if getattr(self.primary, "available", True):
+            try:
+                self._current = self.primary
+                self.primary.speak(text)
+                return
+            except Exception as error:   # timeout, network, HTTP error: use the local voice for this line
+                log.info("Cloud voice unavailable (%s); using the local voice", error)
+        self._current = self.fallback
+        self.fallback.speak(text)
+
+    def stop(self) -> None:
+        for engine in (self.primary, self.fallback):
+            try:
+                engine.stop()
+            except Exception:
+                pass
 
 
 class PrintTTS:
@@ -121,10 +215,8 @@ class ReachyMiniTTS:
     def __init__(self, mini, voice: str | None = "Samantha", rate: int = 165) -> None:
         if not shutil.which("say"):
             raise RuntimeError("ReachyMiniTTS synthesizes with macOS `say`; use MacSayTTS(audio_device=...) elsewhere")
-        self.media = mini.media
+        self.player = ReachyMiniPlayer(mini)
         self.voice, self.rate = voice, rate
-        self._stop = threading.Event()
-        self._started = False
 
     def _synthesize(self, text: str):
         import numpy as np
@@ -146,25 +238,11 @@ class ReachyMiniTTS:
             os.remove(path)
 
     def speak(self, text: str) -> None:
-        self._stop.clear()
         samples, rate = self._synthesize(text)
-        if not self._started:
-            self.media.start_playing()
-            self._started = True
-        out_rate = self.media.get_output_audio_samplerate()
-        if out_rate and out_rate > 0 and out_rate != rate:
-            from .stt import resample
-            samples, rate = resample(samples, rate, out_rate), out_rate
-        self.media.push_audio_sample(samples)
-        # push_audio_sample returns at once; wait for playback (interruptible) plus a small tail.
-        self._stop.wait(len(samples) / rate + 0.15)
+        self.player.play(samples, rate)
 
     def stop(self) -> None:
-        self._stop.set()
-        try:
-            self.media.clear_player()
-        except Exception:  # older SDKs: nothing queued to clear
-            pass
+        self.player.stop()
 
 
 class Pyttsx3TTS:
@@ -192,9 +270,9 @@ class Pyttsx3TTS:
             self._engine.stop()
 
 
-def make_tts(kind: str = "auto", *, voice: str | None = None, rate: int = 165,
-             device: str | None = None, mini=None) -> TTSEngine:
-    """Build the engine named in config.TTS_ENGINE, falling back to PrintTTS."""
+def make_local_tts(kind: str = "auto", *, voice: str | None = None, rate: int = 165,
+                   device: str | None = None, mini=None) -> TTSEngine:
+    """An offline voice: `say` (macOS, robot speaker if `mini`), pyttsx3, or print."""
     kind = (kind or "auto").lower()
     is_mac = platform.system() == "Darwin" and shutil.which("say") is not None
     try:
@@ -205,10 +283,38 @@ def make_tts(kind: str = "auto", *, voice: str | None = None, rate: int = 165,
         if kind in ("pyttsx3", "auto"):
             return Pyttsx3TTS(rate=rate)
     except Exception as error:  # missing package, no robot, not a Mac
-        log.warning("TTS engine %r unavailable (%s); printing lines instead", kind, error)
+        log.warning("Local voice %r unavailable (%s); printing lines instead", kind, error)
     if kind not in ("print", "auto"):
-        log.warning("Unknown or unavailable TTS engine %r; printing lines instead", kind)
+        log.warning("Unknown or unavailable local voice %r; printing lines instead", kind)
     return PrintTTS()
+
+
+def make_tts(kind: str = "openai", *, voice: str | None = None, rate: int = 165, device: str | None = None,
+             mini=None, fallback: str = "auto", openai_model: str = "gpt-4o-mini-tts",
+             openai_voice: str = "coral", instructions: str | None = None, timeout: float = 6.0) -> TTSEngine:
+    """Build the voice from config.TTS_ENGINE.
+
+    "openai": the cloud voice with a local voice as fallback (the default).
+    "say" / "reachy" / "pyttsx3" / "print" / "auto": local voices only.
+    """
+    kind = (kind or "openai").lower()
+    local = make_local_tts(fallback if kind == "openai" else kind, voice=voice, rate=rate, device=device, mini=mini)
+    if kind != "openai":
+        return local
+    from .openai_api import HOST_INSTRUCTIONS, OpenAIClient, OpenAITTS
+
+    client = OpenAIClient()
+    if not client.configured:
+        log.warning("OPENAI_API_KEY not set (see .env.example); using the local voice")
+        return local
+    try:
+        player = ReachyMiniPlayer(mini) if mini is not None and device is None else SoundDevicePlayer(device)
+    except Exception as error:   # sounddevice missing or no such speaker
+        log.warning("Cannot play cloud audio (%s); using the local voice", error)
+        return local
+    cloud = OpenAITTS(player, client, model=openai_model, voice=openai_voice,
+                      instructions=instructions if instructions is not None else HOST_INSTRUCTIONS, timeout=timeout)
+    return FallbackTTS(cloud, local)
 
 
 def time_to_say(text: str, rate_wpm: int = 165) -> float:
@@ -216,5 +322,6 @@ def time_to_say(text: str, rate_wpm: int = 165) -> float:
     return 60.0 * len(text.split()) / max(rate_wpm, 1)
 
 
-__all__ = ["TTSEngine", "PrintTTS", "MacSayTTS", "ReachyMiniTTS", "Pyttsx3TTS", "make_tts", "speakable", "time_to_say"]
+__all__ = ["TTSEngine", "PrintTTS", "MacSayTTS", "ReachyMiniTTS", "Pyttsx3TTS", "FallbackTTS", "SoundDevicePlayer",
+           "ReachyMiniPlayer", "make_tts", "make_local_tts", "speakable", "time_to_say"]
 

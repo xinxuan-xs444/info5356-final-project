@@ -11,7 +11,10 @@ Options:
     --robot     use the Reachy Mini speaker and microphones (needs the reachy-mini SDK)
     --type      type what the player "says" instead of using a microphone (any OS)
     --mic NAME  microphone name substring, e.g. --mic Reachy
-    --llm       allow the LLM helper (config.LLM_PROVIDER); off by default in demos
+    --offline   no OpenAI: local voice, local Whisper (if installed), scripted lines
+                (this is also what happens automatically when the network drops)
+
+OpenAI voice, transcription and the LLM need OPENAI_API_KEY in .env (copy .env.example).
 """
 
 from __future__ import annotations
@@ -28,11 +31,9 @@ import time
 import config
 
 from .answer_parser import format_number, parse_answer
-from .llm import LLMHelper
-from .speech import SpeechService, apply_answer
-from .stt import Heard, make_listener, list_devices
+from .speech import SpeechService, apply_answer, build_speech_service
+from .stt import Heard, list_devices
 from .teaching import TeachingCoach
-from .tts import make_tts
 
 
 class TypedListener:
@@ -49,19 +50,16 @@ class TypedListener:
 
 
 def build(args, mini, *, listen=True) -> SpeechService:
-    tts = make_tts(config.TTS_ENGINE if not args.robot else "reachy", voice=config.TTS_VOICE,
-                   rate=config.TTS_RATE, device=config.SPEAKER_DEVICE, mini=mini)
-    listener = None
+    if args.offline:
+        config.TTS_ENGINE, config.STT_ENGINE, config.LLM_PROVIDER = config.TTS_FALLBACK, "local", "none"
+    if args.mic:
+        config.MIC_DEVICE = args.mic
+    speech = build_speech_service(mini=mini, listen=listen and not args.type)
     if listen and args.type:
-        listener = TypedListener()
-    elif listen:
-        print("Loading Whisper (the first run downloads the model)...")
-        listener = make_listener(mini=mini, device=args.mic or config.MIC_DEVICE, model=config.STT_MODEL,
-                                 compute_type=config.STT_COMPUTE_TYPE, min_rms=config.STT_MIN_SPEECH_RMS,
-                                 end_silence=config.STT_END_SILENCE)
-        listener.transcriber.load().warm_up()
-    llm = LLMHelper.from_config(config.LLM_PROVIDER, config.LLM_MODEL, config.LLM_TIMEOUT) if args.llm else None
-    return SpeechService(tts, listener, llm=llm)
+        speech.listener = TypedListener()
+    if listen and speech.listener is None:
+        print("No microphone or speech recognition available: try --type")
+    return speech
 
 
 def cmd_devices(args, mini) -> None:
@@ -97,9 +95,9 @@ def cmd_round(args, mini) -> None:
     from game.question_bank import QuestionBank
 
     question = random.choice(QuestionBank().get_questions())
-    coach = TeachingCoach(LLMHelper.from_config(config.LLM_PROVIDER, config.LLM_MODEL) if args.llm else None)
     answers: queue.Queue = queue.Queue()
     with build(args, mini) as speech:
+        coach = TeachingCoach(speech.llm)
         speech.on_answer = answers.put
         speech.handle_event("question", question=question["question"])
         speech.say(question["question"])
@@ -205,7 +203,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--robot", action="store_true")
     parser.add_argument("--type", action="store_true")
     parser.add_argument("--mic")
-    parser.add_argument("--llm", action="store_true")
+    parser.add_argument("--offline", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="[%(asctime)s] %(message)s")

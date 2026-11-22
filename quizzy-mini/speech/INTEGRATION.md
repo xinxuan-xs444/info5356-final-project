@@ -128,8 +128,9 @@ What it does:
 1. `create_game()` forwards **every** event to `speech.handle_event()`, not just `say`. Speech needs
    `question`, `state` and `answer_open` too.
 2. `speech.question_provider` lets "Repeat, please" re-read the mini-question during teaching mode.
-3. `main()` builds the service from `config.py`. If the mic, Whisper or `sounddevice` is missing, it logs
-   a warning and keeps going in speak-only mode, so the operator can still type `answer 14`.
+3. `main()` builds the service from `config.py` (OpenAI voice, transcription and LLM; key from `.env`).
+   If the key, the network, the mic or `sounddevice` is missing, it logs a warning and degrades. It uses a
+   local voice, and the operator types `answer 14`. The game keeps running.
 4. The console loop hands spoken answers to the game. Manual `answer`, `correct` and `incorrect` keep working
    as overrides.
 
@@ -168,8 +169,10 @@ coach.nudge(question, value)    # "Close! 2 is a step along the way." for a midd
 - **"Reads each problem twice."** The final proposal says Quizzy reads each problem twice. The game currently
   says it once (`test_question_is_said_once`), and players can ask for repeats. Speech supports either; it's
   Module 1's call.
-- **Answer window.** The 10 s window includes Quizzy saying "Maya, what's your answer?" (about 1.5 s) and 1.5 s
-  for Whisper, which leaves the player about 7 s to talk. That's plenty for a number. If the room is slow,
-  raise `ANSWER_DURATION` or set `STT_MODEL = "tiny.en"`.
+- **Answer window.** The 10 s window includes Quizzy saying "Maya, what's your answer?" (about 1.5 s) and 2.5 s
+  reserved for the OpenAI transcription, which leaves the player about 6 s to talk. That's plenty for a number.
+  If kids need longer, raise `ANSWER_DURATION`.
+- **Shared key.** Everyone puts the same `OPENAI_API_KEY` in a `.env` at the repo root (`.env.example` shows
+  the format). `.env` is already in `.gitignore`, so never commit it.
 - **Pause.** `game.pause()` emits no event, so a player can still be heard while paused. The game then rejects
   the answer, and the console logs it as ignored. If we want, the game could emit `state` on pause.

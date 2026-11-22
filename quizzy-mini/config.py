@@ -20,25 +20,36 @@ ADDRESSING_NAME = "name"
 ADDRESSING_TEAM = "team"
 
 # --- Module 2: speech, answer parsing and LLM (read by speech/*) ---
-# Audio devices. None = system default. A name substring such as "Reachy" also works.
-TTS_ENGINE = "auto"            # "auto", "say" (macOS), "reachy", "pyttsx3" or "print"
-TTS_VOICE = "Samantha"         # macOS voice; list them with: say -v '?'
-TTS_RATE = 165                 # words per minute; a bit slower than default for kids
-SPEAKER_DEVICE = None          # e.g. "Reachy Mini Audio"; list with: python -m speech.demo devices
-MIC_DEVICE = None              # e.g. "Reachy"
+# Needs OPENAI_API_KEY in a .env file at the repo root (copy .env.example). Without a key, or
+# when the network drops, everything falls back: local voice, keyboard answers, scripted lines.
 
-STT_MODEL = "base.en"          # faster-whisper model: tiny.en, base.en, small.en
-STT_COMPUTE_TYPE = "int8"      # int8 runs well on a Mac CPU
+# Voice (text-to-speech)
+TTS_ENGINE = "openai"          # "openai" (cloud + local fallback) or a local-only: "say", "reachy", "pyttsx3", "print"
+TTS_OPENAI_MODEL = "gpt-4o-mini-tts"   # or "tts-1" (faster, no style control) / "tts-1-hd"
+TTS_OPENAI_VOICE = "coral"     # alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, ...
+TTS_INSTRUCTIONS = None        # None = the built-in game-show host style (speech/openai_api.py)
+TTS_TIMEOUT = 6.0              # seconds before a line falls back to the local voice
+TTS_FALLBACK = "auto"          # local voice: "auto" (say on macOS, pyttsx3 elsewhere), "say", "pyttsx3", "print"
+TTS_VOICE = "Samantha"         # macOS `say` voice for the fallback; list with: say -v '?'
+TTS_RATE = 165                 # words per minute for the fallback voice
+SPEAKER_DEVICE = None          # None = default, or a name substring such as "Reachy"
+MIC_DEVICE = None              # list devices with: python -m speech.demo devices
+
+# Listening (speech-to-text)
+STT_ENGINE = "openai"          # "openai" (cloud; local Whisper as backup if installed) or "local"
+STT_OPENAI_MODEL = "gpt-4o-transcribe"   # or "gpt-4o-mini-transcribe" / "whisper-1"
+STT_TIMEOUT = 2.5              # seconds to wait for a transcript before giving up on it
+STT_LOCAL_MODEL = "base.en"    # offline backup (pip install faster-whisper)
+STT_COMPUTE_TYPE = "int8"
 STT_MIN_SPEECH_RMS = 0.01      # quietest level that still counts as speech (0-1 scale)
 STT_END_SILENCE = 0.8          # seconds of silence that ends an utterance
-STT_TRANSCRIBE_BUDGET = 1.5    # seconds kept free at the end of an answer window for Whisper
+STT_TRANSCRIBE_BUDGET = 2.5    # seconds kept free at the end of an answer window for transcription
 
 ANSWER_MIN_CONFIDENCE = 0.5    # parser confidence below this is treated as "unclear"
 MAX_REPEATS = 2                # "Repeat, please" requests honored per problem
 REPEAT_LISTEN_STATES = ("THINK", "BUZZ_OPEN", "STEAL", "HINT_THINK", "TEACH")
 
-# LLM helper: text only, used for unclear answers and short explanations.
-# "auto" uses Ollama if it is running locally, else OpenAI if OPENAI_API_KEY is set, else off.
-LLM_PROVIDER = "auto"          # "auto", "ollama", "openai" or "none"
-LLM_MODEL = None               # None = provider default (see speech/llm.py)
-LLM_TIMEOUT = 4.0              # seconds; on timeout the scripted fallback is used
+# LLM (Chat Completions): unclear answers and short explanations, text only
+LLM_PROVIDER = "openai"        # "openai" or "none"
+LLM_MODEL = "gpt-4o-mini"
+LLM_TIMEOUT = 4.0              # seconds; on timeout the scripted line is used

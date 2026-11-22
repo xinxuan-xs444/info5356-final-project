@@ -1,9 +1,11 @@
-"""Speech-to-text: microphone capture with simple endpointing, then local Whisper.
+"""Speech-to-text: microphone capture with simple endpointing, then transcription.
 
   SoundDeviceRecorder  any mic (laptop, USB, or the Reachy Mini mic array as a USB device)
   ReachyMiniRecorder   the robot mic through the Reachy Mini SDK (mini.media)
-  WhisperSTT           faster-whisper (preferred) or openai-whisper, fully offline
-  Listener             recorder + Whisper: listen(seconds) -> text
+  OpenAITranscriber    OpenAI gpt-4o-transcribe / whisper-1 (openai_api.py), the default
+  WhisperSTT           local faster-whisper, optional offline backup
+  FallbackTranscriber  cloud first, local Whisper if installed, else "" (operator types the answer)
+  Listener             recorder + transcriber: listen(seconds) -> text
   ScriptedListener     returns prepared lines; for tests and keyboard demos
 
 Recording stops early once the player has spoken and then been quiet for
@@ -254,6 +256,10 @@ class WhisperSTT:
         self._backend = None
         self._lock = threading.Lock()
 
+    @property
+    def available(self) -> bool:
+        return True
+
     def load(self) -> "WhisperSTT":
         with self._lock:
             if self._model is not None:
@@ -306,6 +312,47 @@ def is_prompt_echo(text: str, prompt: str | None) -> bool:
     word = r"[a-z0-9]+(?:[.'][a-z0-9]+)*"          # keeps 7.5 and it's, drops sentence periods
     words = re.findall(word, text.lower())
     return len(words) >= 3 and f" {' '.join(words)} " in f" {' '.join(re.findall(word, prompt.lower()))} "
+
+
+class FallbackTranscriber:
+    """Try the cloud first, then local Whisper (if installed). If both fail, return "" and warn
+    the operator to type the answer: the game's own timer keeps running, so nothing stalls."""
+
+    def __init__(self, primary: Transcriber, fallback: Transcriber | None = None) -> None:
+        self.primary, self.fallback = primary, fallback
+        self._warned_at = -1e9
+
+    def transcribe(self, clip: AudioClip, prompt: str | None = None) -> str:
+        if not clip.speech_detected or clip.duration < 0.2:
+            return ""
+        errors = []
+        for engine in (self.primary, self.fallback):
+            if engine is None or not getattr(engine, "available", True):
+                continue
+            try:
+                return engine.transcribe(clip, prompt)
+            except Exception as error:   # network, timeout, model problems
+                errors.append(f"{type(engine).__name__}: {error}")
+        if time.monotonic() - self._warned_at > 10:
+            self._warned_at = time.monotonic()
+            log.warning("SPEECH RECOGNITION OFFLINE (%s). Type the answer in the console, e.g. `answer 14`.",
+                        "; ".join(errors) or "no engine available")
+        return ""
+
+    def load(self) -> "FallbackTranscriber":
+        load = getattr(self.fallback, "load", None)
+        if load is not None:
+            try:
+                load()
+            except Exception as error:
+                log.info("Local Whisper backup not available (%s)", error)
+                self.fallback = None
+        return self
+
+    def warm_up(self) -> None:
+        warm = getattr(self.fallback, "warm_up", None)
+        if warm is not None:
+            warm()
 
 
 # ---------------------------------------------------------------- listeners
@@ -372,8 +419,12 @@ class ScriptedListener:
         pass
 
 
-def make_listener(*, mini=None, device: str | int | None = None, model: str = "base.en",
-                  compute_type: str = "int8", min_rms: float = 0.01, end_silence: float = 0.8) -> Listener:
+def make_listener(*, mini=None, device: str | int | None = None, engine: str = "openai",
+                  openai_model: str = "gpt-4o-transcribe", local_model: str = "base.en",
+                  compute_type: str = "int8", timeout: float = 2.5, min_rms: float = 0.01,
+                  end_silence: float = 0.8) -> Listener:
+    """Mic (robot SDK if `mini`, else sounddevice) + transcriber chosen by `engine`:
+    "openai" (cloud, local Whisper as backup if installed) or "local" (offline Whisper only)."""
     def endpointer() -> Endpointer:
         return Endpointer(min_rms=min_rms, end_silence=end_silence)
 
@@ -381,4 +432,19 @@ def make_listener(*, mini=None, device: str | int | None = None, model: str = "b
         recorder: Recorder = ReachyMiniRecorder(mini, endpointer=endpointer)
     else:
         recorder = SoundDeviceRecorder(device, endpointer=endpointer)
-    return Listener(recorder, WhisperSTT(model, compute_type=compute_type))
+
+    local = WhisperSTT(local_model, compute_type=compute_type)
+    if (engine or "openai").lower() == "local":
+        return Listener(recorder, local)
+
+    from .openai_api import OpenAITranscriber
+
+    cloud = OpenAITranscriber(model=openai_model, timeout=timeout)
+    if not cloud.client.configured:
+        log.warning("OPENAI_API_KEY not set (see .env.example); trying local Whisper")
+    try:
+        import faster_whisper  # noqa: F401
+        backup: Transcriber | None = local
+    except ImportError:
+        backup = None
+    return Listener(recorder, FallbackTranscriber(cloud, backup))

@@ -122,15 +122,15 @@ class Llm(unittest.TestCase):
         helper = LLMHelper("http://x", "m", transport=lambda *a: {"oops": 1})
         self.assertIsNone(helper.interpret_answer("q", "fourteen"))
 
-    def test_from_config_none_and_missing_key(self):
+    def test_from_config_none_missing_key_and_key(self):
+        from unittest import mock
         self.assertFalse(LLMHelper.from_config("none").available)
-        import os
-        saved = os.environ.pop("OPENAI_API_KEY", None)
-        try:
+        with mock.patch("speech.openai_api.load_env"), mock.patch.dict("os.environ", {}, clear=True):
             self.assertFalse(LLMHelper.from_config("openai").available)
-        finally:
-            if saved is not None:
-                os.environ["OPENAI_API_KEY"] = saved
+        with mock.patch("speech.openai_api.load_env"), mock.patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
+            helper = LLMHelper.from_config("openai")
+        self.assertTrue(helper.available)
+        self.assertEqual((helper.model, helper.base_url), ("gpt-4o-mini", "https://api.openai.com/v1"))
 
     def test_parser_and_llm_agree_on_the_division_of_labor(self):
         # The parser handles clear answers itself; only unclear ones should reach the LLM.
